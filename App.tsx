@@ -1,13 +1,19 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Radio, Loader2, AlertCircle, Settings, BookOpen, Headphones, Play, ArrowLeft } from 'lucide-react';
+import { Loader2, Settings, Headphones, History as HistoryIcon, Library, X, Sparkles, Trash2, ArrowLeft, FileText } from 'lucide-react';
 import { App as CapacitorApp } from '@capacitor/app'; 
 import { motion, AnimatePresence } from 'framer-motion';
-import { AppState, AppSettings, DEFAULT_SETTINGS } from './types';
+import { AppState, AppSettings, DEFAULT_SETTINGS, HistoryItem, RawArticle } from './types';
 import { summarizeArticles, generateSpeech } from './services/aiService';
+import { historyService } from './services/historyService';
 import { ArticleInput } from './components/ArticleInput';
 import { Player } from './components/Player';
 import { SettingsModal } from './components/SettingsModal';
+import { HistoryModal } from './components/HistoryModal';
+import { Logo } from './components/Logo';
+import { SplashScreen } from './components/SplashScreen';
+import { Bookshelf } from './components/Bookshelf';
+import { ScrollReader } from './components/ScrollReader';
 
 declare global {
   interface Window {
@@ -15,7 +21,6 @@ declare global {
   }
 }
 
-// Helper hook to detect mobile view for conditional animations
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -32,12 +37,41 @@ const getAudioContext = () => {
   return new AudioContextClass({ sampleRate: 24000 });
 };
 
+const parseMarkdownBold = (text: string) => {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      const content = part.slice(2, -2);
+      return (
+        <strong 
+          key={i} 
+          className="font-bold text-slate-900 px-1 mx-0.5 rounded-[2px]"
+          style={{
+            backgroundImage: 'linear-gradient(to bottom, transparent 60%, #e0e7ff 40%)',
+            WebkitBoxDecorationBreak: 'clone',
+            boxDecorationBreak: 'clone'
+          }}
+        >
+          {content}
+        </strong>
+      );
+    }
+    return part;
+  });
+};
+
+// 动画配置：iOS 风格的阻尼曲线
+const TRANSITION_SPRING = { type: "spring", stiffness: 260, damping: 30 };
+const TRANSITION_EASE = { type: "tween", ease: [0.32, 0.72, 0, 1], duration: 0.5 };
+
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
   const [textInput, setTextInput] = useState('');
+  const [rawArticles, setRawArticles] = useState<RawArticle[]>([]);
+  const [selectedBookIndex, setSelectedBookIndex] = useState<number | null>(null);
   
-  // State for result persistence
   const [summary, setSummary] = useState('');
-  const [lastSummarizedText, setLastSummarizedText] = useState(''); // Cache key: the text that generated the current summary
+  const [lastSummarizedText, setLastSummarizedText] = useState(''); 
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
   
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
@@ -45,16 +79,14 @@ export default function App() {
   
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   
   const isMobile = useIsMobile();
-
-  // Helper to determine if we are showing the result "page"
-  const isResultOpen = appState === AppState.READY || appState === AppState.GENERATING_AUDIO;
-
-  // Determine if the current input matches the cached summary
+  // Check if the "Result" panel (Summary) is effectively open
+  const isResultOpen = (appState === AppState.READY || appState === AppState.GENERATING_AUDIO) && !!summary;
+  
   const hasCachedSummary = !!summary && textInput.trim() === lastSummarizedText.trim() && textInput.trim().length > 0;
-
   const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
@@ -77,40 +109,36 @@ export default function App() {
     setIsSettingsLoaded(true);
   }, []);
 
-  // --- Hardware Back Button Logic (Android) ---
   useEffect(() => {
     const handleBackButton = async () => {
-        // If settings modal is open, close it
+        if (showSplash) return;
+        if (selectedBookIndex !== null) {
+            setSelectedBookIndex(null);
+            return;
+        }
         if (isSettingsOpen) {
             setIsSettingsOpen(false);
             return;
         }
-
-        // If result page is open (and we are on mobile), go back to input
-        // On desktop, the result is side-by-side, so "back" might mean exit app or do nothing.
-        // Assuming "Back" logic primarily for mobile view navigation.
+        if (isHistoryOpen) {
+            setIsHistoryOpen(false);
+            return;
+        }
         if (isResultOpen && isMobile) {
             handleBackToInput();
             return;
         }
-
-        // Otherwise, use default behavior (minimize/exit)
         try {
-            const info = await CapacitorApp.getInfo();
-            CapacitorApp.exitApp();
+            await CapacitorApp.exitApp();
         } catch (e) {
             console.warn('App exit not supported in browser');
         }
     };
-
-    // Add Listener
     const backButtonListener = CapacitorApp.addListener('backButton', handleBackButton);
-
-    // Cleanup
     return () => {
         backButtonListener.then(handler => handler.remove());
     };
-  }, [isSettingsOpen, isResultOpen, isMobile]);
+  }, [isSettingsOpen, isHistoryOpen, isResultOpen, isMobile, selectedBookIndex, showSplash]);
 
   const handleSaveSettings = (newSettings: AppSettings) => {
     setSettings(newSettings);
@@ -119,27 +147,20 @@ export default function App() {
 
   const handleGenerateSummary = async () => {
     if (!textInput.trim()) return;
-
-    // --- Caching Logic ---
-    // If the input text hasn't changed and we have a summary, just show it.
     if (hasCachedSummary) {
         setAppState(AppState.READY);
         return;
     }
-
     try {
       setErrorDetails('');
       setAppState(AppState.GENERATING_SUMMARY);
-      
-      // Only clear previous results if we are actually generating new content
       setSummary(''); 
       setAudioBuffer(null);
-
       const summaryText = await summarizeArticles(textInput, settings);
-      
       setSummary(summaryText);
-      setLastSummarizedText(textInput); // Update cache key
+      setLastSummarizedText(textInput); 
       setAppState(AppState.READY); 
+      historyService.saveHistoryItem(textInput, summaryText);
     } catch (error: any) {
       handleError(error);
     }
@@ -148,7 +169,6 @@ export default function App() {
   const handleGenerateAudio = async () => {
     if (!summary) return;
     if (!audioContextRef.current) audioContextRef.current = getAudioContext();
-
     try {
       setAppState(AppState.GENERATING_AUDIO);
       const buffer = await generateSpeech(summary, audioContextRef.current, settings);
@@ -160,14 +180,18 @@ export default function App() {
   };
 
   const handleBackToInput = () => {
-      // Return to IDLE state to show Input view
-      // Note: We DO NOT clear summary or audioBuffer here, allowing persistence.
       setAppState(AppState.IDLE);
-      
-      // Optional: Suspend audio context to save battery/stop playing
-      if (audioContextRef.current) {
-          audioContextRef.current.suspend();
-      }
+      if (audioContextRef.current) audioContextRef.current.suspend();
+  };
+
+  const handleSelectHistory = (item: HistoryItem) => {
+      setTextInput(item.originalText);
+      setSummary(item.summary);
+      setLastSummarizedText(item.originalText);
+      setAudioBuffer(null);
+      setRawArticles([]);
+      setAppState(AppState.READY);
+      setIsHistoryOpen(false);
   };
 
   const handleError = (error: any) => {
@@ -180,240 +204,385 @@ export default function App() {
       setErrorDetails(msg);
   };
 
+  const handleArticlesFetched = (articles: RawArticle[]) => {
+      setRawArticles(articles);
+  };
+
+  const handleBookClick = (article: RawArticle, index: number) => {
+      setSelectedBookIndex(index);
+  };
+
+  const handleReset = (e?: React.MouseEvent) => {
+    e?.stopPropagation(); // Prevent bubbling issues
+    setTimeout(() => {
+        if (window.confirm('确定清空书架并返回吗？')) {
+            setRawArticles([]);
+            setTextInput('');
+            setAppState(AppState.IDLE);
+        }
+    }, 10);
+  };
+
   const isConfigMissing = !settings.llm.apiKey;
-  
   const t = settings.language === 'zh-CN' ? {
-    title: '通勤简报',
-    configMissing: '请点击设置图标配置 API Key',
+    title: '万象志',
     summaryTitle: '今日简报',
-    readTime: 'AI 深度总结',
     generateAudio: '生成语音播报',
-    generatingAudioBtn: '正在合成语音...',
     generatingSummary: 'AI 正在阅读...',
-    prepare: '准备就绪',
-    prepareDesc: '在左侧粘贴内容，我们将为您提炼重点。',
-    back: '返回'
   } : {
-    title: 'Daily Briefing',
-    configMissing: 'Please configure API Key',
+    title: 'Wanxiang Journal',
     summaryTitle: 'Today\'s Briefing',
-    readTime: 'AI Summary',
     generateAudio: 'Generate Audio',
-    generatingAudioBtn: 'Synthesizing...',
     generatingSummary: 'Reading articles...',
-    prepare: 'Ready',
-    prepareDesc: 'Paste content to start.',
-    back: 'Back'
   };
 
   if (!isSettingsLoaded) return null;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900 overflow-hidden">
+    <>
+      <AnimatePresence>
+        {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
+      </AnimatePresence>
       
-      <SettingsModal 
-        isOpen={isSettingsOpen} 
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onSave={handleSaveSettings}
-      />
+      {/* 
+         ROOT CONTAINER: Changed to BLACK to provide depth when cards scale down. 
+         This is crucial for the "Stacked" feel. 
+      */}
+      <div className="min-h-screen font-sans selection:bg-amber-200 selection:text-amber-900 overflow-hidden bg-black">
+        
+        <SettingsModal 
+          isOpen={isSettingsOpen} 
+          onClose={() => setIsSettingsOpen(false)}
+          settings={settings}
+          onSave={handleSaveSettings}
+        />
 
-      {/* Global Header */}
-      <header className="fixed top-0 left-0 right-0 z-30 bg-white/80 backdrop-blur-md border-b border-slate-200/60 shadow-sm safe-top transition-all h-14">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-full flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="bg-indigo-600 p-1.5 rounded-lg text-white">
-              <Radio className="w-4 h-4" />
-            </div>
-            <h1 className="font-bold text-lg tracking-tight text-slate-800">{t.title}</h1>
-          </div>
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setIsSettingsOpen(true)}
-              className="p-2 text-slate-400 hover:bg-slate-100 hover:text-indigo-600 rounded-full transition-colors relative"
-            >
-              <Settings className="w-5 h-5" />
-              {isConfigMissing && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>}
-            </button>
-          </div>
-        </div>
-      </header>
+        <HistoryModal
+          isOpen={isHistoryOpen}
+          onClose={() => setIsHistoryOpen(false)}
+          onSelect={handleSelectHistory}
+          language={settings.language}
+        />
 
-      {/* Main Container */}
-      <main className="pt-14 h-[calc(100vh)] relative">
-        <div className="max-w-6xl mx-auto h-full grid grid-cols-1 lg:grid-cols-12 lg:gap-10">
-          
-          {/* --- VIEW 1: Input Column --- */}
-          <motion.div 
-            key="input-view"
-            className="lg:col-span-4 h-full overflow-y-auto px-4 sm:px-6 py-6 scrollbar-hide"
-            // Parallax Effect: Only on mobile, slide left and dim when result is open
-            animate={isMobile ? {
-              x: isResultOpen ? '-20%' : '0%', 
-              opacity: isResultOpen ? 0.8 : 1,
-              filter: isResultOpen ? 'brightness(0.95)' : 'brightness(1)',
-              scale: isResultOpen ? 0.98 : 1
-            } : {}}
-            transition={{ type: "spring", stiffness: 300, damping: 30 }}
-          >
-            <div className="flex flex-col gap-4 min-h-full">
-                <ArticleInput 
-                  value={textInput}
-                  onChange={setTextInput}
-                  onGenerateSummary={handleGenerateSummary}
-                  isGeneratingSummary={appState === AppState.GENERATING_SUMMARY}
-                  disabled={isConfigMissing}
-                  hasCachedSummary={hasCachedSummary}
-                />
-                
-                {!isConfigMissing && appState === AppState.IDLE && (
-                    <div className="mt-4 p-4 bg-white/50 border border-slate-200/50 rounded-2xl text-xs text-slate-400 text-center">
-                        <p>{t.prepareDesc}</p>
-                    </div>
-                )}
-                
-                {/* Loading State Overlay */}
-                {appState === AppState.GENERATING_SUMMARY && (
-                   <div className="absolute inset-0 z-10 bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center rounded-3xl">
-                      <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
-                      <p className="text-slate-500 font-medium animate-pulse">{t.generatingSummary}</p>
-                   </div>
-                )}
-            </div>
-          </motion.div>
+        {/* Scroll Reader Overlay */}
+        <AnimatePresence>
+          {selectedBookIndex !== null && rawArticles[selectedBookIndex] && (
+            <ScrollReader 
+               key="reader"
+               article={rawArticles[selectedBookIndex]} 
+               index={selectedBookIndex}
+               layoutId={`scroll-${selectedBookIndex}`} 
+               onClose={() => setSelectedBookIndex(null)}
+            />
+          )}
+        </AnimatePresence>
 
-          {/* --- VIEW 2: Output Column (Result View) --- */}
-          {/* Using AnimatePresence to handle the slide-in/slide-out lifecycle */}
-          <AnimatePresence>
-            {(isResultOpen || !isMobile) && (
-              // On desktop (!isMobile), we always render this column.
-              // On mobile (isMobile), we only render if isResultOpen is true.
-              // However, AnimatePresence works best when the component unmounts.
-              // To support desktop split-view without animation and mobile with animation, we use conditional rendering logic.
-              
-              <div className={`
-                 ${isMobile ? 'fixed inset-0 z-40' : 'lg:col-span-8 h-full'}
-                 ${!isResultOpen && !isMobile ? 'hidden lg:block lg:opacity-50 lg:pointer-events-none' : ''} 
-                 /* Above line hides/dims column on desktop if no result, but keeps layout structure */
-              `}>
-                  {(!isMobile || isResultOpen) && (
-                      <motion.div 
-                        key="result-panel"
-                        className={`bg-slate-50 flex flex-col h-full w-full shadow-2xl lg:shadow-none lg:bg-transparent`}
-                        // Mobile Animation: Slide in from right (100% -> 0)
-                        initial={isMobile ? { x: '100%' } : { opacity: 0 }} 
-                        animate={isMobile ? { x: '0%' } : { opacity: 1 }}
-                        exit={isMobile ? { x: '100%' } : { opacity: 0 }}
-                        transition={{ type: "spring", stiffness: 300, damping: 30, mass: 0.8 }}
-                      >
-                        
-                        {/* Mobile Header with Back Button */}
-                        <div className="sticky top-0 z-50 bg-white/95 backdrop-blur-sm border-b border-slate-100 px-4 py-3 flex items-center gap-3 lg:hidden safe-top">
-                            <button 
-                               onClick={handleBackToInput}
-                               className="p-2 -ml-2 text-slate-600 hover:bg-slate-100 rounded-full transition-colors active:scale-95"
-                            >
-                                <ArrowLeft className="w-5 h-5" />
+        {/* =======================
+            MOBILE LAYOUT (STACKING LOGIC)
+           ======================= */}
+        {isMobile ? (
+            <>
+                {/* 
+                   LAYER 1: HOME CARD (Input + Bookshelf)
+                   Behavior: Scales down, fades out, and pushes back when Result is open.
+                */}
+                <motion.div 
+                    className="h-screen bg-stone-50 overflow-hidden flex flex-col relative z-0 origin-top"
+                    initial={{ scale: 1, borderRadius: 0, opacity: 1 }}
+                    animate={isResultOpen ? { 
+                        scale: 0.92, 
+                        borderRadius: 24, 
+                        opacity: 0.5,
+                        y: 10,
+                        filter: "brightness(0.7)"
+                    } : { 
+                        scale: 1, 
+                        borderRadius: 0, 
+                        opacity: 1,
+                        y: 0,
+                        filter: "brightness(1)"
+                    }}
+                    transition={TRANSITION_EASE}
+                    style={{ willChange: 'transform, opacity, filter' }} // Performance optimization
+                >
+                    {/* Header is now INSIDE the scaling container for mobile */}
+                    <header className="flex-shrink-0 bg-white/80 backdrop-blur-md border-b border-stone-200/60 shadow-sm safe-top h-14 flex items-center justify-between px-4 sm:px-6 relative z-30">
+                        <div className="flex items-center gap-2.5">
+                            <Logo className="w-8 h-8 shadow-sm rounded-lg" />
+                            <h1 className="font-serif font-bold text-xl tracking-[0.2em] text-slate-900 ml-1">{t.title}</h1>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => setIsHistoryOpen(true)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition-colors">
+                                <HistoryIcon className="w-5 h-5" />
                             </button>
-                            <span className="font-bold text-slate-800 text-sm">{t.summaryTitle}</span>
+                            <button onClick={() => setIsSettingsOpen(true)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition-colors relative">
+                                <Settings className="w-5 h-5" />
+                                {isConfigMissing && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>}
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* Scrollable Main Area */}
+                    <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide relative z-0">
+                        <div className="px-4 py-4">
+                            <ArticleInput 
+                                value={textInput}
+                                onChange={setTextInput}
+                                onGenerateSummary={handleGenerateSummary}
+                                isGeneratingSummary={appState === AppState.GENERATING_SUMMARY}
+                                disabled={isConfigMissing}
+                                hasCachedSummary={hasCachedSummary}
+                                onArticlesFetched={handleArticlesFetched}
+                                hasArticles={rawArticles.length > 0}
+                            />
+                            {appState === AppState.GENERATING_SUMMARY && (
+                                <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center">
+                                    <div className="bg-white p-6 rounded-2xl flex flex-col items-center shadow-2xl">
+                                        <Loader2 className="w-10 h-10 text-amber-600 animate-spin mb-4" />
+                                        <p className="text-stone-800 font-serif text-lg">{t.generatingSummary}</p>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
-                        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 sm:py-8">
-                            {/* Error State */}
-                            {(appState === AppState.ERROR || errorDetails) && (
-                              <div className="bg-red-50 border border-red-100 text-red-700 p-4 rounded-2xl text-sm flex items-start gap-3 mb-6">
-                                <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                                <div>
-                                   <span className="font-semibold block mb-1">Error</span>
-                                   <span className="opacity-90 leading-snug">{errorDetails}</span>
+                        <div className="pb-32 min-h-[50vh]">
+                            {rawArticles.length > 0 ? (
+                                <div className="min-h-full">
+                                    <Bookshelf 
+                                        articles={rawArticles} 
+                                        onBookClick={handleBookClick}
+                                    />
+                                    {/* Floating Action Bar */}
+                                    <div className="fixed bottom-6 left-0 right-0 z-20 flex flex-col items-center gap-3 pointer-events-none">
+                                        <button
+                                            onClick={handleGenerateSummary}
+                                            disabled={appState === AppState.GENERATING_SUMMARY}
+                                            className={`pointer-events-auto group text-white shadow-xl transition-all hover:scale-105 active:scale-95 px-8 py-3.5 rounded-full flex items-center gap-2.5 font-bold text-base backdrop-blur-sm border 
+                                                ${hasCachedSummary 
+                                                    ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-900/50 border-indigo-500/20' 
+                                                    : 'bg-amber-700 hover:bg-amber-800 shadow-amber-900/50 border-amber-500/20'
+                                                }`}
+                                        >
+                                            {hasCachedSummary ? (
+                                                <FileText className="w-5 h-5 text-indigo-200" />
+                                            ) : (
+                                                <Sparkles className="w-5 h-5 group-hover:animate-pulse text-amber-200" />
+                                            )}
+                                            <span>{hasCachedSummary ? '查看 AI 简报' : '生成 AI 简报'}</span>
+                                        </button>
+                                        
+                                        <button 
+                                            onClick={handleReset}
+                                            className="pointer-events-auto text-stone-400 text-xs font-medium hover:text-white bg-black/50 backdrop-blur px-4 py-1.5 rounded-full shadow-sm flex items-center gap-1.5 border border-white/10 active:bg-black/70 transition-all"
+                                        >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                            <span>清空书架</span>
+                                        </button>
+                                    </div>
                                 </div>
-                              </div>
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-slate-300 pb-20 pt-10">
+                                    <Library className="w-12 h-12 mb-3 opacity-30" />
+                                    <p className="font-serif text-sm">暂无卷宗</p>
+                                </div>
                             )}
+                        </div>
+                    </div>
+                </motion.div>
 
-                            {/* Content Card */}
-                            {summary ? (
-                                <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden min-h-[50vh]">
-                                    
-                                    {/* Reader Header */}
-                                    <div className="bg-white border-b border-slate-100 px-6 sm:px-8 py-4 flex items-center justify-between gap-4 sticky top-0 z-10">
-                                        <div>
-                                            <h2 className="font-serif font-bold text-lg text-slate-800 leading-tight">{t.summaryTitle}</h2>
-                                            <div className="flex items-center gap-2 mt-1">
-                                                <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded tracking-wide uppercase">AI BRIEF</span>
-                                                <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">{t.readTime}</span>
-                                            </div>
-                                        </div>
+                {/* 
+                   LAYER 2: SUMMARY CARD (Slides Over) 
+                   Behavior: Slides from bottom/right with huge shadow, creating parallax depth.
+                */}
+                <AnimatePresence>
+                    {isResultOpen && (
+                        <motion.div 
+                            className="fixed inset-0 z-40 bg-stone-50 flex flex-col h-full overflow-hidden"
+                            // Start from 100% height (bottom) or width (right) - Right feels more like a navigation
+                            initial={{ x: '100%' }}
+                            animate={{ x: '0%' }}
+                            exit={{ x: '100%' }}
+                            transition={TRANSITION_EASE}
+                            style={{ 
+                                boxShadow: '-30px 0px 60px -15px rgba(0,0,0,0.5)', // Deep shadow for separation
+                                willChange: 'transform' 
+                            }}
+                        >
+                             {/* Header */}
+                            <div className="flex-shrink-0 h-14 bg-white/95 backdrop-blur border-b border-stone-200/80 px-4 flex items-center justify-between safe-top shadow-sm z-10">
+                                <button onClick={handleBackToInput} className="flex items-center gap-1 text-slate-600 hover:text-slate-900 px-2 py-1 -ml-2 rounded-lg active:bg-slate-100 transition-colors">
+                                    <ArrowLeft className="w-5 h-5" />
+                                    <span className="font-medium">返回</span>
+                                </button>
+                                <div className="font-serif font-bold text-slate-800 text-lg">{t.summaryTitle}</div>
+                                <div className="w-8"></div> 
+                            </div>
 
+                            {/* Content */}
+                            <div className="flex-1 overflow-y-auto bg-stone-50 p-4 pb-24">
+                                <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden relative">
+                                    <div className="bg-white border-b border-slate-100 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
+                                        <div className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded tracking-wide">AI BRIEF</div>
                                         <div className="flex-shrink-0">
                                             {audioBuffer ? (
-                                               <div className="animate-in fade-in zoom-in duration-300 origin-right">
-                                                  <Player audioBuffer={audioBuffer} context={audioContextRef.current!} />
-                                               </div>
+                                                <Player audioBuffer={audioBuffer} context={audioContextRef.current!} />
                                             ) : (
-                                               <button 
-                                                 onClick={handleGenerateAudio}
-                                                 disabled={appState === AppState.GENERATING_AUDIO}
-                                                 className={`
-                                                    group flex items-center gap-2 pl-3 pr-4 py-2 rounded-full text-sm font-medium border transition-all duration-300
-                                                    ${appState === AppState.GENERATING_AUDIO
-                                                       ? 'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed'
-                                                       : 'bg-indigo-50 border-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 shadow-sm'
-                                                    }
-                                                 `}
-                                               >
-                                                 {appState === AppState.GENERATING_AUDIO ? (
-                                                   <Loader2 className="w-4 h-4 animate-spin" />
-                                                 ) : (
-                                                   <div className="bg-white text-indigo-600 rounded-full p-1 shadow-sm group-hover:bg-white/20 group-hover:text-white transition-colors">
-                                                      <Headphones className="w-3 h-3" />
-                                                   </div>
-                                                 )}
-                                                 <span>
-                                                    {appState === AppState.GENERATING_AUDIO ? t.generatingAudioBtn : t.generateAudio}
-                                                 </span>
-                                               </button>
+                                                <button 
+                                                    onClick={handleGenerateAudio}
+                                                    disabled={appState === AppState.GENERATING_AUDIO}
+                                                    className="bg-indigo-50 border border-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-full text-xs font-bold transition-colors flex items-center gap-1.5"
+                                                >
+                                                    {appState === AppState.GENERATING_AUDIO ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Headphones className="w-3.5 h-3.5"/>}
+                                                    {t.generateAudio}
+                                                </button>
                                             )}
                                         </div>
                                     </div>
+                                    <article className="p-6">
+                                        {summary.split('\n').map((para, i) => para.trim() && (
+                                            <p key={i} className="font-serif text-[16px] leading-8 text-slate-700 mb-6 text-justify">
+                                                {parseMarkdownBold(para)}
+                                            </p>
+                                        ))}
+                                    </article>
+                                    <div className="px-6 pb-8 pt-2 flex justify-center opacity-30">
+                                        <div className="w-16 h-1 bg-slate-200 rounded-full"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+            </>
+        ) : (
+            /* =======================
+                DESKTOP LAYOUT (Unchanged logic, just restored the wrapper)
+               ======================= */
+            <div className="bg-stone-50 min-h-screen flex flex-col">
+                 <header className="fixed top-0 left-0 right-0 z-30 bg-white/80 backdrop-blur-md border-b border-stone-200/60 shadow-sm safe-top transition-all h-14">
+                    <div className="max-w-6xl mx-auto px-4 sm:px-6 h-full flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                        <Logo className="w-8 h-8 shadow-sm rounded-lg" />
+                        <h1 className="font-serif font-bold text-xl tracking-[0.2em] text-slate-900 ml-1">{t.title}</h1>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => setIsHistoryOpen(true)} className="p-2 text-slate-400 hover:bg-slate-100 hover:text-indigo-600 rounded-full transition-colors">
+                                <HistoryIcon className="w-5 h-5" />
+                            </button>
+                            <button onClick={() => setIsSettingsOpen(true)} className="p-2 text-slate-400 hover:bg-slate-100 hover:text-indigo-600 rounded-full transition-colors relative">
+                                <Settings className="w-5 h-5" />
+                                {isConfigMissing && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>}
+                            </button>
+                        </div>
+                    </div>
+                </header>
 
-                                    {/* Content Body */}
-                                    <article className="p-6 sm:p-12">
-                                      <div className="prose prose-slate prose-lg max-w-none 
-                                        prose-headings:font-serif prose-headings:font-bold prose-headings:text-slate-800 
-                                        prose-p:font-serif prose-p:text-slate-600 prose-p:leading-8 prose-p:mb-6 
-                                        first-letter:text-5xl first-letter:font-bold first-letter:text-indigo-600 first-letter:mr-3 first-letter:float-left first-letter:leading-none">
-                                        {summary.split('\n').map((para, i) => {
-                                            const trimmed = para.trim();
-                                            if (!trimmed) return null;
-                                            return <p key={i}>{trimmed}</p>;
-                                        })}
-                                      </div>
-                                      
-                                      <div className="mt-16 pt-8 border-t border-slate-100 flex justify-center">
-                                         <div className="flex gap-2">
-                                            {[1,2,3].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full bg-slate-300" />)}
-                                         </div>
-                                      </div>
+                <main className="pt-14 h-[calc(100vh)] relative max-w-6xl mx-auto w-full grid grid-cols-12 gap-10">
+                     {/* Desktop Input Column */}
+                     <div className="col-span-4 px-6 py-6 h-full overflow-y-auto">
+                          <ArticleInput 
+                            value={textInput}
+                            onChange={setTextInput}
+                            onGenerateSummary={handleGenerateSummary}
+                            isGeneratingSummary={appState === AppState.GENERATING_SUMMARY}
+                            disabled={isConfigMissing}
+                            hasCachedSummary={hasCachedSummary}
+                            onArticlesFetched={handleArticlesFetched}
+                            hasArticles={rawArticles.length > 0}
+                          />
+                          {appState === AppState.GENERATING_SUMMARY && (
+                             <div className="mt-4 flex items-center justify-center gap-2 text-amber-600">
+                                 <Loader2 className="w-5 h-5 animate-spin" />
+                                 <span>{t.generatingSummary}</span>
+                             </div>
+                          )}
+                     </div>
+    
+                     {/* Desktop Display Column */}
+                     <div className="col-span-8 h-full overflow-hidden relative">
+                        {isResultOpen && summary ? (
+                           <div className="h-full py-6 pr-6 overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+                                <div className="bg-white rounded-3xl shadow-sm border border-slate-200 relative">
+                                    <button onClick={handleBackToInput} className="absolute top-6 right-6 p-2 bg-slate-50 hover:bg-slate-100 rounded-full transition-colors z-20 text-slate-400 hover:text-slate-600">
+                                        <X className="w-5 h-5" />
+                                    </button>
+                                    <div className="bg-white border-b border-slate-100 px-10 py-8 flex items-center justify-between sticky top-0 z-10 rounded-t-3xl">
+                                        <div>
+                                            <h2 className="font-serif font-bold text-3xl text-slate-800 mb-2">{t.summaryTitle}</h2>
+                                            <div className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded w-fit uppercase tracking-wider">AI Generated Brief</div>
+                                        </div>
+                                        <div className="flex-shrink-0 mr-12">
+                                            {audioBuffer ? (
+                                                <Player audioBuffer={audioBuffer} context={audioContextRef.current!} />
+                                            ) : (
+                                                <button 
+                                                onClick={handleGenerateAudio}
+                                                disabled={appState === AppState.GENERATING_AUDIO}
+                                                className="bg-indigo-50 border border-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white px-5 py-2.5 rounded-full text-sm font-bold transition-colors flex items-center gap-2"
+                                                >
+                                                    {appState === AppState.GENERATING_AUDIO ? <Loader2 className="w-4 h-4 animate-spin"/> : <Headphones className="w-4 h-4"/>}
+                                                    {t.generateAudio}
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <article className="p-10 px-12">
+                                        {summary.split('\n').map((para, i) => para.trim() && (
+                                            <p key={i} className="font-serif text-lg leading-9 text-slate-700 mb-8 text-justify">
+                                                {parseMarkdownBold(para)}
+                                            </p>
+                                        ))}
                                     </article>
                                 </div>
-                            ) : (
-                                /* Desktop Placeholder when empty */
-                                !isMobile && (
-                                    <div className="h-full flex flex-col items-center justify-center text-slate-300 p-10 border-2 border-dashed border-slate-200 rounded-3xl">
-                                        <BookOpen className="w-12 h-12 mb-4 opacity-50" />
-                                        <p>Select content to view summary</p>
+                           </div>
+                        ) : (
+                            rawArticles.length > 0 ? (
+                                <div className="h-full relative py-6 pr-6">
+                                    <div className="h-full overflow-y-auto">
+                                        <Bookshelf 
+                                            articles={rawArticles} 
+                                            onBookClick={handleBookClick}
+                                        />
                                     </div>
-                                )
-                            )}
-                        </div>
-                      </motion.div>
-                  )}
-              </div>
-            )}
-          </AnimatePresence>
-
-        </div>
-      </main>
-    </div>
+                                    <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex gap-3">
+                                        <button
+                                            onClick={handleGenerateSummary}
+                                            disabled={appState === AppState.GENERATING_SUMMARY}
+                                            className={`group text-white shadow-xl transition-all hover:scale-105 active:scale-95 px-8 py-3.5 rounded-full flex items-center gap-2.5 font-bold text-base border
+                                                ${hasCachedSummary 
+                                                    ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-900/50 border-indigo-500/20' 
+                                                    : 'bg-amber-700 hover:bg-amber-800 shadow-amber-900/50 border-amber-500/20'
+                                                }`}
+                                        >
+                                            {hasCachedSummary ? (
+                                                <FileText className="w-5 h-5 text-indigo-200" />
+                                            ) : (
+                                                <Sparkles className="w-5 h-5 group-hover:animate-pulse text-amber-200" />
+                                            )}
+                                            <span>{hasCachedSummary ? '查看 AI 简报' : '生成 AI 简报'}</span>
+                                        </button>
+                                        <button 
+                                            onClick={handleReset}
+                                            className="text-stone-400 hover:text-white bg-black/50 border border-white/10 px-4 py-1.5 rounded-full shadow-sm flex items-center gap-1.5 text-sm transition-colors"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                            清空
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-slate-300 p-10 m-6 border-2 border-dashed border-slate-200 rounded-3xl">
+                                    <Library className="w-20 h-20 mb-6 opacity-40" />
+                                    <p className="font-serif text-xl mb-2">书架空空如也</p>
+                                    <p className="text-slate-400">从左侧选择一个新闻源开始</p>
+                                </div>
+                            )
+                        )}
+                     </div>
+                </main>
+            </div>
+        )}
+      </div>
+    </>
   );
 }

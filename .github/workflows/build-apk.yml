@@ -1,10 +1,11 @@
+
 name: Build Android APK
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch: # 允许你在 GitHub 页面上手动点击按钮打包
+  workflow_dispatch:
 
 jobs:
   build:
@@ -28,27 +29,29 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install # 比 ci 更通用，不容易报错
+        run: npm ci
 
-      - name: Build Web Project
-        run: npm run build # 对应你 package.json 里的 vite build
+      - name: Build Next.js App
+        run: npm run build
 
       - name: Setup Capacitor
         run: |
-          # 检查配置文件，web-dir 必须指向 dist
+          # Check if Capacitor config exists, if not, initialize it
           if [ ! -f "capacitor.config.ts" ] && [ ! -f "capacitor.config.json" ]; then
             echo "Initializing Capacitor..."
-            npx cap init "CommuteBrief" "com.ainews.app" --web-dir=dist
+            npx cap init "CommuteBrief" "com.ainews.app" --web-dir=out
           fi
 
-      - name: Add or Sync Android Platform
+      - name: Add Android Platform
         run: |
-          # 如果没有 android 文件夹就添加，有就同步
+          # Add android folder if it doesn't exist, otherwise sync
           if [ ! -d "android" ]; then
             echo "Adding Android platform..."
             npx cap add android
+          else
+            echo "Syncing Android platform..."
+            npx cap sync android
           fi
-          npx cap sync android
 
       - name: Build APK with Gradle
         run: |
@@ -59,5 +62,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: my-app-debug-apk # 下载时的名字
+          name: app-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk

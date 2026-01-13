@@ -1,10 +1,12 @@
 
-import React, { useState } from 'react';
-import { FileText, Sparkles, Rss, Loader2, Trash2, ChevronRight, Globe, Link as LinkIcon, Shuffle, Eye } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FileText, Rss, Loader2, Trash2, ChevronDown, RefreshCw, Edit3, ChevronUp, AlertCircle } from 'lucide-react';
+import { cleanArticleContent } from '../services/contentCleaner';
+import { RawArticle } from '../types';
 
 // --- API Configuration ---
-// 您的公网地址 (Cpolar) - Python Backend for RSS Fetching ONLY
-const API_ENDPOINT = 'https://48f63395.r36.cpolar.top/fetch_feed';
+// Python Backend for RSS Fetching
+const API_ENDPOINT = 'https://www.wanxiangzhi.xyz:8443/fetch_feed';
 
 interface ArticleInputProps {
   value: string;
@@ -12,7 +14,9 @@ interface ArticleInputProps {
   onGenerateSummary: () => void;
   isGeneratingSummary: boolean;
   disabled: boolean;
-  hasCachedSummary?: boolean; // New prop to indicate if a summary exists for current text
+  hasCachedSummary?: boolean;
+  onArticlesFetched: (articles: RawArticle[]) => void; 
+  hasArticles: boolean;
 }
 
 const SOURCES = [
@@ -29,200 +33,276 @@ const SOURCES = [
   { name: "Tom's Hardware (英伟达/硬件)", url: "https://www.tomshardware.com/feeds/all" }
 ];
 
+const SEEN_URLS_KEY = 'commute_brief_seen_urls';
+const MAX_SEEN_URLS = 1000;
+const MAX_RETRIES_RANDOM = 5;
+const BATCH_SIZE = 6; 
+
+const isUrlSeen = (url: string): boolean => {
+  try {
+    const seenList = JSON.parse(localStorage.getItem(SEEN_URLS_KEY) || '[]');
+    return seenList.includes(url);
+  } catch (e) {
+    return false;
+  }
+};
+
+const addToSeenList = (url: string) => {
+  try {
+    let seenList = JSON.parse(localStorage.getItem(SEEN_URLS_KEY) || '[]');
+    if (!seenList.includes(url)) {
+      seenList.push(url);
+      if (seenList.length > MAX_SEEN_URLS) {
+        seenList = seenList.slice(seenList.length - MAX_SEEN_URLS);
+      }
+      localStorage.setItem(SEEN_URLS_KEY, JSON.stringify(seenList));
+    }
+  } catch (e) {
+    console.error("Failed to save seen url", e);
+  }
+};
+
+const getArticleId = (article: any): string => {
+    return article.link || article.url || article.guid || article.title || '';
+};
+
 export const ArticleInput: React.FC<ArticleInputProps> = ({ 
   value, 
   onChange, 
   onGenerateSummary, 
   isGeneratingSummary, 
   disabled,
-  hasCachedSummary = false
+  hasCachedSummary = false,
+  onArticlesFetched,
+  hasArticles
 }) => {
   const [isFetchingNews, setIsFetchingNews] = useState(false);
   const [fetchStatus, setFetchStatus] = useState('');
-  const [selectedSourceUrl, setSelectedSourceUrl] = useState<string>("");
+  const [selectedSourceUrl, setSelectedSourceUrl] = useState<string>(""); 
+  const [isExpanded, setIsExpanded] = useState(true);
+
+  // Auto-collapse when articles are fetched
+  useEffect(() => {
+    if (hasArticles) {
+        setIsExpanded(false);
+    } else {
+        setIsExpanded(true);
+    }
+  }, [hasArticles]);
 
   const handleClear = () => {
-    if (confirm('Clear input?')) onChange('');
+    if (confirm('确定清空书架内容吗？')) {
+        onChange('');
+        onArticlesFetched([]); 
+    }
   };
 
-  const fetchFeed = async (url: string, sourceName: string) => {
-    if (isFetchingNews) return;
-    setIsFetchingNews(true);
-    setFetchStatus(`Connecting to Server...`);
-    
-    try {
-      // 使用您指定的公网地址 /fetch_feed
-      // 参数名: rss_url
+  const fetchRSSData = async (url: string) => {
       const SERVER_API = `${API_ENDPOINT}?rss_url=${encodeURIComponent(url)}`;
-      
-      console.log("Fetching RSS from:", SERVER_API);
-
       const response = await fetch(SERVER_API, {
         method: 'GET',
         headers: { 
             'Accept': 'application/json',
-            'ngrok-skip-browser-warning': 'true' // 防止某些隧道服务的警告页拦截
+            'ngrok-skip-browser-warning': 'true'
         }
       });
-
-      if (!response.ok) {
-          throw new Error(`Server error: ${response.status}`);
-      }
-      
-      const data = await response.json();
-
-      if (!data) throw new Error('Empty response');
-
-      let contentToDisplay = "";
-
-      // 逻辑修正：后端只负责爬取 RSS，返回的是文章列表 (Array) 或 纯文本
-      // 不再检查 data.summary，因为后端不进行 AI 总结
-      if (Array.isArray(data)) {
-          // Case 1: 返回了文章列表
-          if (data.length === 0) throw new Error('No articles found');
-          // 将爬取到的文章拼接成文本，放入输入框，供前端 AI 总结使用
-          contentToDisplay = `【Source: ${sourceName}】\n\n` + data.slice(0, 5).map((a: any, i: number) => 
-            `# Article ${i + 1}: ${a.title}\n\n${a.content?.trim() || 'Content not available.'}`
-          ).join('\n\n---\n\n');
-      } else if (typeof data === 'string') {
-          // Case 2: 返回纯文本
-           contentToDisplay = data;
-      } else {
-          // Case 3: 未知结构，尝试提取内容
-          contentToDisplay = JSON.stringify(data, null, 2);
-      }
-
-      onChange(contentToDisplay);
-      setFetchStatus('');
-    } catch (e: any) {
-      console.error("Fetch Error:", e);
-      setFetchStatus('Failed to fetch');
-      // 显示具体错误信息以便调试 (可选)
-      onChange(`Error fetching content: ${e.message}\nCheck if the server is running at ${API_ENDPOINT}`);
-      setTimeout(() => setFetchStatus(''), 4000);
-    } finally {
-      setIsFetchingNews(false);
-    }
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+      return await response.json();
   };
 
-  const handleSelectSource = (url: string) => {
-      setSelectedSourceUrl(url);
-      if (url) {
-          const source = SOURCES.find(s => s.url === url);
-          if (source) fetchFeed(url, source.name);
+  const fetchAndDisplayBatch = async (sourceUrl: string, sourceName: string): Promise<number> => {
+      try {
+          const data = await fetchRSSData(sourceUrl);
+          if (!data) return 0;
+          let articles = [];
+          if (Array.isArray(data)) articles = data;
+          else if (typeof data === 'object' && data.entries) articles = data.entries;
+          if (articles.length === 0) return 0;
+
+          const unseenArticles = articles.filter((a: any) => {
+              const id = getArticleId(a);
+              return id && !isUrlSeen(id);
+          });
+          if (unseenArticles.length === 0) return 0;
+
+          const batch = unseenArticles.slice(0, BATCH_SIZE);
+          const rawArticlesPayload: RawArticle[] = [];
+          
+          const formattedStrings = batch.map((article: any, index: number) => {
+              addToSeenList(getArticleId(article));
+              const rawContent = article.content || article.description || article.summary || '';
+              const cleanBody = cleanArticleContent(rawContent);
+              const finalBody = cleanBody.length > 50 ? cleanBody : (cleanArticleContent(article.title) || '内容提取失败');
+
+              rawArticlesPayload.push({
+                  title: article.title || 'Untitled',
+                  content: finalBody,
+                  sourceName: sourceName
+              });
+              return `### 第 ${index + 1} 篇：${article.title}\n\n${finalBody}`;
+          });
+
+          onArticlesFetched(rawArticlesPayload);
+          const header = `【今日简报源: ${sourceName}】\n共获取到 ${batch.length} 篇新文章\n`;
+          const separator = `\n\n${'-'.repeat(20)}\n\n`;
+          const contentToDisplay = header + separator + formattedStrings.join(separator);
+          onChange(contentToDisplay);
+          return batch.length;
+      } catch (e) {
+          console.warn(`Error fetching ${sourceName}:`, e);
+          return 0;
       }
   };
 
-  const handleRandomSource = () => {
-      const otherSources = SOURCES.filter(s => s.url !== selectedSourceUrl);
-      const randomSource = otherSources[Math.floor(Math.random() * otherSources.length)] || SOURCES[0];
-      setSelectedSourceUrl(randomSource.url);
-      fetchFeed(randomSource.url, randomSource.name);
+  const handleFetchNext = async () => {
+      if (isFetchingNews || disabled) return;
+      setIsFetchingNews(true);
+      setFetchStatus('正在连接...');
+      onArticlesFetched([]); 
+
+      try {
+          if (selectedSourceUrl) {
+              const source = SOURCES.find(s => s.url === selectedSourceUrl);
+              const name = source?.name || '未知源';
+              setFetchStatus(`正在获取: ${name}`);
+              const count = await fetchAndDisplayBatch(selectedSourceUrl, name);
+              
+              if (count > 0) {
+                  setFetchStatus(`获取成功 (${count}篇)`);
+                  setTimeout(() => setFetchStatus(''), 2500);
+              } else {
+                  setFetchStatus('没有新文章了');
+                  alert('这个栏目的新文章都看完了，换个源试试吧！');
+              }
+          } else {
+              let attempts = 0;
+              let count = 0;
+              while (attempts < MAX_RETRIES_RANDOM && count === 0) {
+                  attempts++;
+                  const randomSource = SOURCES[Math.floor(Math.random() * SOURCES.length)];
+                  setFetchStatus(`[探索 ${attempts}/${MAX_RETRIES_RANDOM}] ${randomSource.name}...`);
+                  count = await fetchAndDisplayBatch(randomSource.url, randomSource.name);
+                  if (count === 0) await new Promise(r => setTimeout(r, 500));
+              }
+              if (count > 0) {
+                  setFetchStatus(`发现 ${count} 篇新内容！`);
+                  setTimeout(() => setFetchStatus(''), 2500);
+              } else {
+                  setFetchStatus('暂无新内容');
+                  alert('连续尝试了多个订阅源，似乎没有新文章了。');
+              }
+          }
+      } catch (e: any) {
+          console.error(e);
+          setFetchStatus('网络或服务器异常');
+          onChange(`错误信息: ${e.message}`);
+      } finally {
+          setIsFetchingNews(false);
+      }
   };
 
   return (
-    <div className="bg-white rounded-3xl shadow-sm border border-slate-100 flex flex-col h-full transition-shadow hover:shadow-md overflow-hidden relative">
+    <div 
+        className={`flex flex-col transition-all duration-500 overflow-hidden relative border
+            ${isExpanded 
+                ? 'bg-white rounded-3xl shadow-sm border-slate-200/60' 
+                : 'bg-white/90 backdrop-blur-md rounded-2xl shadow-sm border-slate-200/50 mb-2'
+            }
+        `}
+    >
       
-      {/* 1. Top Bar: Source Selection */}
-      <div className="px-5 py-4 border-b border-slate-50 flex items-center justify-between bg-slate-50/30 gap-4">
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="bg-indigo-50 p-1.5 rounded-lg text-indigo-600 flex-shrink-0">
-            <Rss className="w-4 h-4" />
+      {/* 1. Compact Top Bar */}
+      <div className={`pl-4 pr-3 py-3 flex items-center justify-between gap-3 transition-colors ${isExpanded ? 'border-b border-slate-100 bg-slate-50/50' : ''}`}>
+        
+        {/* Source Dropdown */}
+        <div className="flex-1 min-w-0 relative group">
+          <div className="absolute left-0 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none group-hover:text-indigo-500 transition-colors">
+             <Rss className="w-4 h-4" />
           </div>
           <select
             value={selectedSourceUrl}
-            onChange={(e) => handleSelectSource(e.target.value)}
+            onChange={(e) => setSelectedSourceUrl(e.target.value)}
             disabled={isFetchingNews || disabled}
-            className="bg-transparent text-sm font-medium text-slate-700 outline-none w-full cursor-pointer hover:text-indigo-600 transition-colors truncate pr-4"
+            className="w-full bg-transparent text-sm font-medium text-slate-700 outline-none cursor-pointer appearance-none pl-6 pr-8 py-1.5 rounded-lg hover:bg-slate-100 transition-colors truncate"
           >
-            <option value="">选择订阅源 / Select Source...</option>
+            <option value="">🎲 随便看看 (随机推荐)</option>
+            <hr />
             {SOURCES.map((s) => (
               <option key={s.url} value={s.url}>{s.name}</option>
             ))}
           </select>
+          <div className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+             <ChevronDown className="w-3.5 h-3.5" />
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-shrink-0">
-           {/* Random Button */}
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2 flex-shrink-0 border-l border-slate-200 pl-3">
            <button
-             onClick={handleRandomSource}
+             onClick={handleFetchNext}
              disabled={isFetchingNews || disabled}
-             className="flex items-center gap-1.5 text-xs bg-white border border-slate-200 px-3 py-1.5 rounded-md text-slate-600 font-medium hover:border-indigo-300 hover:text-indigo-600 transition-all shadow-sm active:scale-95"
-             title="Random Source"
+             className="flex items-center gap-1.5 text-xs bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg text-indigo-700 font-bold hover:bg-indigo-100 hover:border-indigo-200 transition-all shadow-sm active:scale-95 active:bg-indigo-200"
            >
-              {isFetchingNews ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Shuffle className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">随机</span>
+              {isFetchingNews ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              <span>{isFetchingNews ? '获取' : (hasArticles ? '换一批' : '获取')}</span>
            </button>
            
-           {value && (
-            <button onClick={handleClear} className="p-1.5 text-slate-300 hover:text-red-500 transition-colors" title="Clear">
+           {/* Toggle Expand/Collapse */}
+           {hasArticles && (
+               <button 
+                onClick={() => setIsExpanded(!isExpanded)}
+                className={`p-1.5 rounded-lg transition-colors ${isExpanded ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}
+                title={isExpanded ? "收起文本" : "查看/编辑原始文本"}
+               >
+                   {isExpanded ? <ChevronUp className="w-4 h-4" /> : <Edit3 className="w-4 h-4" />}
+               </button>
+           )}
+
+           {value && isExpanded && (
+            <button 
+                onClick={handleClear} 
+                className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" 
+                title="清空"
+            >
                 <Trash2 className="w-4 h-4" />
             </button>
            )}
         </div>
       </div>
 
-      {/* 2. Main Input Area */}
-      <div className="flex-1 relative group">
-        <textarea
-          className="w-full h-full p-6 resize-none outline-none text-slate-600 text-base leading-relaxed font-mono placeholder:text-slate-300 bg-transparent"
-          placeholder="在此粘贴文章内容，或点击上方“随机”按钮..."
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={disabled}
-        />
-        
-        {/* Helper Overlay when empty */}
-        {!value && !isFetchingNews && (
-            <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-30">
-                <FileText className="w-16 h-16 text-slate-200" />
+      {/* 2. Collapsible Text Area with Grid Transition */}
+      <div 
+         className={`grid transition-[grid-template-rows] duration-500 ease-in-out ${isExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+      >
+         <div className="overflow-hidden min-h-0">
+            <div className="relative group bg-slate-50/10 h-full">
+                <textarea
+                className="w-full h-full min-h-[300px] p-6 resize-none outline-none text-slate-600 text-base leading-relaxed font-mono placeholder:text-slate-300 bg-transparent scrollbar-hide"
+                placeholder={selectedSourceUrl ? "点击上方“获取”..." : "点击上方“获取”..."}
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                disabled={disabled}
+                />
+                
+                {!value && !isFetchingNews && (
+                    <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center gap-4 opacity-40">
+                        <div className="bg-slate-100 p-4 rounded-full">
+                        <FileText className="w-8 h-8 text-slate-400" />
+                        </div>
+                        <p className="text-slate-400 font-serif tracking-widest text-sm">万象待启，静候良言</p>
+                    </div>
+                )}
             </div>
-        )}
-        
+         </div>
+      </div>
+      
         {/* Status Toast */}
         {fetchStatus && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-800/90 backdrop-blur text-white text-xs px-4 py-2 rounded-full shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-2 z-10">
-                {fetchStatus === 'Failed to fetch' ? <LinkIcon className="w-3 h-3"/> : <Loader2 className="w-3 h-3 animate-spin"/>}
+            <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-slate-800/90 backdrop-blur text-white text-xs px-4 py-2 rounded-full shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-2 z-20 whitespace-nowrap">
+                {fetchStatus.includes('失败') || fetchStatus.includes('没有') ? <AlertCircle className="w-3 h-3"/> : <Loader2 className="w-3 h-3 animate-spin"/>}
                 {fetchStatus}
             </div>
         )}
-      </div>
-
-      {/* 3. Action Footer */}
-      <div className="p-4 bg-white border-t border-slate-50">
-        <button
-          onClick={onGenerateSummary}
-          disabled={!value.trim() || isGeneratingSummary || disabled}
-          className={`
-            w-full h-12 rounded-xl flex items-center justify-center gap-2.5 font-semibold text-[15px] transition-all duration-300
-            ${!value.trim() || isGeneratingSummary || disabled
-              ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-              : hasCachedSummary 
-                ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-200 hover:bg-emerald-700 hover:scale-[1.01]' 
-                : 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 hover:bg-indigo-700 hover:scale-[1.01] active:scale-[0.98]'
-            }
-          `}
-        >
-          {isGeneratingSummary ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>正在阅读并生成摘要...</span>
-            </>
-          ) : hasCachedSummary ? (
-            <>
-              <Eye className="w-5 h-5" />
-              <span>查看已有摘要</span>
-              <ChevronRight className="w-4 h-4 opacity-50" />
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-5 h-5" />
-              <span>开始生成摘要</span>
-              <ChevronRight className="w-4 h-4 opacity-50" />
-            </>
-          )}
-        </button>
-      </div>
     </div>
   );
 };

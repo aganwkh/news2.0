@@ -332,19 +332,22 @@ export const summarizeArticles = async (text: string, settings: AppSettings): Pr
     ? `你是一位资深科技主编。请启动【深度解构模式】，将输入内容转化为一份详尽的【深度分析报告】，供专业广播播报使用。
 
 核心原则：
-1. 【深度还原】彻底放弃“摘要”或“概括”的思维。你的任务是提取并重组原文中所有的关键事实、具体数据指标、技术细节、背景逻辑和人物观点。
-2. 【严禁精简】禁止为了篇幅而删除细节。如果原文提到了具体的参数（如 3.5GHz）、金额（如 100亿美元）、时间线或特定名词，必须在报告中完整呈现，不得模糊处理。
-3. 【逻辑重构】不要简单罗列。要将碎片化的信息串联成一条逻辑严密、深度递进的叙事链条，像一篇深度特稿一样引人入胜。
-4. 【广播风格】输出必须是适合朗读的口语化文稿（纯文本）。虽然内容硬核，但语言要流畅自然，避免生硬的翻译腔或过度书面化的表达。
-5. 【拒绝套话】严禁使用“总而言之”、“综上所述”、“即使...也...”等陈词滥调来强行总结。报告应自然结束于最后一个关键信息的呈现。
-6. 【统一语言】无论原文是何种语言，必须输出简体中文。
+1. 【零开场白】严禁使用“好的”、“收到”、“这是一份...”或“根据您的要求...”等任何开场白或客套话。必须直接开始输出正文内容。
+2. 【深度还原】彻底放弃“摘要”或“概括”的思维。你的任务是提取并重组原文中所有的关键事实、具体数据指标、技术细节、背景逻辑和人物观点。
+3. 【严禁精简】禁止为了篇幅而删除细节。如果原文提到了具体的参数（如 3.5GHz）、金额（如 100亿美元）、时间线或特定名词，必须在报告中完整呈现，不得模糊处理。
+4. 【逻辑重构】不要简单罗列。要将碎片化的信息串联成一条逻辑严密、深度递进的叙事链条，像一篇深度特稿一样引人入胜。
+5. 【广播风格】输出必须是适合朗读的口语化文稿。虽然内容硬核，但语言要流畅自然，避免生硬的翻译腔或过度书面化的表达。
+6. 【拒绝套话】严禁使用“总而言之”、“综上所述”、“即使...也...”等陈词滥调来强行总结。报告应自然结束于最后一个关键信息的呈现。
+7. 【统一语言】无论原文是何种语言，必须输出简体中文。
+8. 【重点高亮】请识别文本中最重要、最震撼、或最具洞察力的词语和短句（大约占全文的 10%），并用 Markdown 的粗体语法（即用 ** 包裹）将它们标记出来。注意：不要改变原文的段落结构，保持文章的自然流畅阅读感。
 
 目标：输出一篇信息密度极高、逻辑严密且细节丰富的深度报道，而非简报。`
     : `You are a professional news anchor. Summarize the following text into a coherent, engaging script suitable for oral broadcasting.
        Requirements: 
-       1. No Markdown formatting, output plain text.
-       2. Maintain a professional yet friendly tone, like a radio host.
-       3. Please dynamically adjust the length of the summary based on the total word count and information density of the input text. If the input article is long and detailed, provide a comprehensive summary covering all key points; if the input is short, provide a concise summary. The goal is to retain the most value while ensuring a natural flow.`;
+       1. Start directly with the content. Do NOT use introductory phrases like "Okay", "Here is", or "Sure".
+       2. Identify the most important, shocking, or insightful words and short phrases (about 10% of the total text) and mark them using Markdown bold syntax (**text**).
+       3. Maintain a professional yet friendly tone, like a radio host.
+       4. Please dynamically adjust the length of the summary based on the total word count and information density of the input text. If the input article is long and detailed, provide a comprehensive summary covering all key points; if the input is short, provide a concise summary. The goal is to retain the most value while ensuring a natural flow.`;
 
   if (provider === 'gemini') {
     const ai = new GoogleGenAI({ apiKey });

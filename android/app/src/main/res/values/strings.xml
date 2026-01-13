@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">通勤简报</string>
-    <string name="title_activity_main">通勤简报</string>
-    <string name="package_name">com.myapp.test</string>
-    <string name="custom_url_scheme">com.myapp.test</string>
+    <string name="app_name">万象志</string>
+    <string name="title_activity_main">万象志</string>
+    <string name="package_name">wanxiangzhi1.0</string>
+    <string name="custom_url_scheme">wanxiangzhi1.0</string>
 </resources>

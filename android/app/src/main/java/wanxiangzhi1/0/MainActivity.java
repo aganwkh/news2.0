@@ -1,4 +1,4 @@
-package com.myapp.test;
+package wanxiangzhi1.0;
 
 import com.getcapacitor.BridgeActivity;
 

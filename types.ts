@@ -5,9 +5,23 @@ export interface Article {
   content: string;
 }
 
+export interface RawArticle {
+  title: string;
+  content: string;
+  sourceName: string;
+}
+
 export interface SummaryResult {
   text: string;
   audioBuffer: AudioBuffer | null;
+}
+
+export interface HistoryItem {
+  id: string;
+  title: string;
+  originalText: string;
+  summary: string;
+  timestamp: number;
 }
 
 export enum AppState {
